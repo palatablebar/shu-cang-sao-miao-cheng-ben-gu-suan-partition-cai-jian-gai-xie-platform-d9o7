@@ -171,9 +171,11 @@ CREATE TABLE estimate_run (
 	prunable_count INTEGER NOT NULL, 
 	total_scan_bytes BIGINT NOT NULL, 
 	total_cost_cny FLOAT NOT NULL, 
-	monthly_projected_cost_cny FLOAT NOT NULL, 
-	saved_by_rewrites_bytes BIGINT NOT NULL, 
-	top_query_id INTEGER, 
+	monthly_projected_cost_cny FLOAT NOT NULL,
+	saved_by_rewrites_bytes BIGINT NOT NULL,
+	saved_by_rewrites_cost_cny FLOAT NOT NULL,
+	suggestion_count INTEGER NOT NULL,
+	top_query_id INTEGER,
 	top_scan_bytes BIGINT NOT NULL, 
 	budget_status VARCHAR(16) NOT NULL, 
 	budget_policy_id INTEGER, 
@@ -220,3 +222,37 @@ CREATE TABLE rewrite_suggestion (
 CREATE INDEX ix_rewrite_suggestion_query_log_id ON rewrite_suggestion (query_log_id);
 
 CREATE UNIQUE INDEX ix_rewrite_suggestion_suggestion_no ON rewrite_suggestion (suggestion_no);
+
+CREATE INDEX ix_rewrite_suggestion_estimate_run_id ON rewrite_suggestion (estimate_run_id);
+
+CREATE TABLE estimate_run_item (
+	id SERIAL NOT NULL,
+	estimate_run_id INTEGER NOT NULL,
+	query_log_id INTEGER NOT NULL,
+	external_id VARCHAR(32) NOT NULL,
+	target_table VARCHAR(96),
+	parse_status VARCHAR(24) NOT NULL,
+	prunable BOOLEAN NOT NULL,
+	blocked_reason VARCHAR(32) NOT NULL,
+	hit_partition_count INTEGER NOT NULL,
+	total_partition_count INTEGER NOT NULL,
+	scan_bytes BIGINT NOT NULL,
+	scan_cost_cny FLOAT NOT NULL,
+	suggestion_id INTEGER,
+	suggestion_saving_bytes BIGINT NOT NULL,
+	suggestion_saving_cost_cny FLOAT NOT NULL,
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+	PRIMARY KEY (id),
+	CONSTRAINT uq_estimate_run_item_run_query UNIQUE (estimate_run_id, query_log_id),
+	CONSTRAINT uq_estimate_run_item_run_suggestion UNIQUE (estimate_run_id, suggestion_id),
+	FOREIGN KEY(estimate_run_id) REFERENCES estimate_run (id) ON DELETE CASCADE,
+	FOREIGN KEY(query_log_id) REFERENCES query_log (id),
+	FOREIGN KEY(suggestion_id) REFERENCES rewrite_suggestion (id) ON DELETE SET NULL
+);
+
+CREATE INDEX ix_estimate_run_item_estimate_run_id ON estimate_run_item (estimate_run_id);
+
+CREATE INDEX ix_estimate_run_item_query_log_id ON estimate_run_item (query_log_id);
+
+CREATE INDEX ix_estimate_run_item_suggestion_id ON estimate_run_item (suggestion_id);

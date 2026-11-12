@@ -11,6 +11,10 @@ export interface EstimateRun {
   total_scan_bytes: number
   total_cost_cny: number
   monthly_projected_cost_cny: number
+  /** 该批次冻结的建议收益（每条建议只计一次） */
+  saved_by_rewrites_bytes: number
+  saved_by_rewrites_cost_cny: number
+  suggestion_count: number
   top_query_id: number | null
   top_scan_bytes: number
   budget_status: string

@@ -22,7 +22,10 @@ class EstimateRun(Base, TimestampMixin):
     total_scan_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     total_cost_cny: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     monthly_projected_cost_cny: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # 批次冻结的建议收益（算法 2 在该批次执行时求得，之后不随日志/元数据变化而重算）
     saved_by_rewrites_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    saved_by_rewrites_cost_cny: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    suggestion_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     top_query_id: Mapped[int | None] = mapped_column(ForeignKey("query_log.id"), nullable=True)
     top_scan_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     budget_status: Mapped[str] = mapped_column(String(16), nullable=False, default="ok")

@@ -25,11 +25,12 @@ if __package__ in (None, ""):  # allow `python scripts/seed_demo.py`
 from sqlalchemy import func, select  # noqa: E402
 
 from scripts import demo_dataset  # noqa: E402
-from src.analysis.estimator import estimate_queries  # noqa: E402
+from src.analysis.estimator import EstimateRow, summarize_rows  # noqa: E402
+from src.analysis.rewriter import RewriteResult  # noqa: E402
 from src.analysis.sql_analyzer import analyze_query  # noqa: E402
 from src.config.database import SessionLocal, init_db  # noqa: E402
 from src.config.settings import settings  # noqa: E402
-from src.constants.enums import RunStatus  # noqa: E402
+from src.constants.enums import RunStatus, SuggestionStatus  # noqa: E402
 from src.models import (  # noqa: E402
     BudgetPolicy,
     EstimateRun,
@@ -41,8 +42,7 @@ from src.models import (  # noqa: E402
     User,
 )
 from src.models.base import utcnow  # noqa: E402
-from src.services import query_service, rewrite_service, table_service  # noqa: E402
-from src.services.estimate_service import budget_status_for  # noqa: E402
+from src.services import estimate_service, query_service, rewrite_service, table_service  # noqa: E402
 from src.utils.password import hash_password  # noqa: E402
 
 GIB = 1024 ** 3
@@ -155,18 +155,17 @@ def seed_queries(db) -> int:
 
 
 def seed_estimates(db) -> int:
+    """Seed the two demo batches as frozen snapshots (natural key run_no, never rewritten)."""
+    from src.analysis.rewriter import build_rewrite
+
     catalog = table_service.build_catalog(db)
     queries = list(db.scalars(select(QueryLog).order_by(QueryLog.id)))
-    by_id = {query.id: query for query in queries}
     policy = db.scalar(
         select(BudgetPolicy)
         .where(BudgetPolicy.scope == "global", BudgetPolicy.is_active.is_(True))
         .order_by(BudgetPolicy.id)
         .limit(1)
     )
-    budget = policy.monthly_budget_cny if policy else settings.DEFAULT_MONTHLY_BUDGET_CNY
-    warn = policy.warn_ratio if policy else settings.DEFAULT_WARN_RATIO
-    critical = policy.critical_ratio if policy else settings.DEFAULT_CRITICAL_RATIO
 
     created = 0
     for spec in demo_dataset.SEED_ESTIMATES:
@@ -176,40 +175,45 @@ def seed_estimates(db) -> int:
         selected = queries
         if spec["scope"] == "table":
             selected = [q for q in queries if q.target_table == spec["scope_value"]]
-        summary = estimate_queries(
-            [(q.id, q.sql_text) for q in selected],
-            catalog,
-            settings.COST_PER_GIB_CNY,
-            settings.MONTHLY_QUERY_DAYS,
-            settings.QUERY_VOLUME_SCALE,
+        rows: list[EstimateRow] = []
+        suggestions: list[tuple[QueryLog, RewriteResult, bool]] = []
+        run = EstimateRun(
+            run_no=spec["run_no"],
+            status=RunStatus.QUEUED.value,
+            scope=spec["scope"],
+            scope_value=spec["scope_value"],
+            note=spec["note"],
+            created_by=spec["created_by"],
+            started_at=datetime.now(timezone.utc),
         )
-        for row in summary.rows:
-            query = by_id.get(row.query_id)
-            if query is not None:
-                query_service._apply_analysis(query, row.analysis, settings.COST_PER_GIB_CNY)
-        db.add(
-            EstimateRun(
-                run_no=spec["run_no"],
-                status=RunStatus.COMPLETED.value,
-                scope=spec["scope"],
-                scope_value=spec["scope_value"],
-                query_count=summary.query_count,
-                parsed_count=summary.parsed_count,
-                blocked_count=summary.blocked_count,
-                prunable_count=summary.prunable_count,
-                total_scan_bytes=summary.total_scan_bytes,
-                total_cost_cny=summary.total_cost_cny,
-                monthly_projected_cost_cny=summary.monthly_projected_cost_cny,
-                top_query_id=summary.top_query_id,
-                top_scan_bytes=summary.top_scan_bytes,
-                budget_status=budget_status_for(summary.monthly_projected_cost_cny, budget, warn, critical),
-                budget_policy_id=policy.id if policy else None,
-                note=spec["note"],
-                created_by=spec["created_by"],
-                started_at=datetime.now(timezone.utc),
-                finished_at=datetime.now(timezone.utc),
+        db.add(run)
+        db.flush()
+        for query in selected:
+            result = build_rewrite(
+                query.sql_text,
+                catalog,
+                window_days=settings.REWRITE_WINDOW_DAYS,
+                cost_per_gib_cny=settings.COST_PER_GIB_CNY,
+                risk_weights=rewrite_service.RISK_WEIGHTS,
             )
+            suggestion, owned = estimate_service._ensure_suggestion(db, query, result, run)
+            row = EstimateRow(
+                query_id=query.id,
+                analysis=result.before,
+                rewrite_saving_bytes=result.saving_bytes if owned else 0,
+                rewrite_saving_cost_cny=result.saving_cost_cny if owned else 0.0,
+                suggestion_id=suggestion.id if owned and suggestion is not None else None,
+            )
+            rows.append(row)
+            suggestions.append((query, result, owned))
+        summary = summarize_rows(
+            rows, settings.COST_PER_GIB_CNY, settings.MONTHLY_QUERY_DAYS, settings.QUERY_VOLUME_SCALE
         )
+        estimate_service._apply_run_summary(run, summary, policy)
+        db.flush()
+        estimate_service._freeze_items(db, run, summary, selected)
+        for query, result, _owned in suggestions:
+            query_service._apply_analysis(query, result.before, settings.COST_PER_GIB_CNY)
         created += 1
         db.commit()
     _log(f"estimates created={created} total={len(demo_dataset.SEED_ESTIMATES)}")
@@ -268,6 +272,19 @@ def expected_suggestion_nos(db) -> list[str]:
 
 def seed_suggestions(db) -> int:
     created = rewrite_service.rebuild_suggestions(db, limit=12)
+    # 演示剧本：Top1 的改写 RW-QL-0001 已被采纳，其余保持待采纳。
+    top = db.scalar(
+        select(RewriteSuggestion).order_by(RewriteSuggestion.score.desc(), RewriteSuggestion.id.asc()).limit(1)
+    )
+    if top is not None and top.status == SuggestionStatus.PENDING.value:
+        top.status = SuggestionStatus.ADOPTED.value
+        top.reviewed_by = demo_dataset.ADMIN
+        top.reviewed_at = utcnow()
+        db.commit()
+    # 采纳后刷新批次冻结的建议收益合计，让批次列表与预算页显示同一口径。
+    for run in db.scalars(select(EstimateRun).where(EstimateRun.scope == "all")):
+        rewrite_service._refresh_run_totals(db, run.id)
+    db.commit()
     _log(f"suggestions created={created} expected=12")
     return created
 

@@ -14,7 +14,7 @@ class RewriteSuggestion(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(primary_key=True)
     suggestion_no: Mapped[str] = mapped_column(String(48), unique=True, nullable=False, index=True)
     query_log_id: Mapped[int] = mapped_column(ForeignKey("query_log.id"), nullable=False, index=True)
-    estimate_run_id: Mapped[int | None] = mapped_column(ForeignKey("estimate_run.id"), nullable=True)
+    estimate_run_id: Mapped[int | None] = mapped_column(ForeignKey("estimate_run.id"), nullable=True, index=True)
     anti_patterns: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     risk_level: Mapped[str] = mapped_column(String(16), nullable=False, default="medium")
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)

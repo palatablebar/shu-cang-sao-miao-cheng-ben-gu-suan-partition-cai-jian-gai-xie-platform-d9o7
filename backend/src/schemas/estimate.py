@@ -23,6 +23,9 @@ class EstimateRunOut(BaseModel):
     total_scan_bytes: int
     total_cost_cny: float
     monthly_projected_cost_cny: float
+    saved_by_rewrites_bytes: int
+    saved_by_rewrites_cost_cny: float
+    suggestion_count: int
     top_query_id: int | None
     top_scan_bytes: int
     budget_status: str
